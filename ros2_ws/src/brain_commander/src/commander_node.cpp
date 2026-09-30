@@ -8,7 +8,7 @@
 
 #include <chrono>
 #include <memory>
-
+#include <functional>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "trajectory_interfaces/msg/trajectory_command.hpp"
@@ -21,6 +21,13 @@ public:
   CommanderNode()
   : Node("commander_node")
   {
+    publisher_ = this->create_publisher<trajectory_interfaces::msg::TrajectoryCommand>(
+      "/trajectory_cmd", 10
+    );
+    timer_= this->create_wall_timer(
+      100ms,
+      std::bind(&CommanderNode::timer_callback, this));
+    
 
     // Un noeud externe pour publier sur /obstacle_alert afin de simuler la detection d'un obstacle.
     //
@@ -32,6 +39,72 @@ public:
   }
 
 private:
+enum Etat
+{
+  GRAND_COTE,
+  TOURNE_APRES_GRAND_COTE,
+  PETIT_COTE,
+  TOURNE_APRES_PETIT_COTE
+};
+
+void timer_callback()
+{
+  trajectory_interfaces::msg::TrajectoryCommand message;
+  compteur_= compteur_+ 1;
+  if (etat_ == GRAND_COTE)
+  {
+    message.linear_speed = 2.0;
+    message.angular_speed = 0.0;
+
+    if (compteur_ >= 20)
+    {
+      etat_ = TOURNE_APRES_GRAND_COTE;
+      compteur_ = 0;
+    }
+  }
+  else if (etat_ == TOURNE_APRES_GRAND_COTE)
+  {
+    message.linear_speed = 0.0;
+    message.angular_speed = 1.57;
+
+    if (compteur_ >= 10)
+    {
+      etat_ = PETIT_COTE;
+      compteur_ = 0;
+    }
+  }
+  else if (etat_ == PETIT_COTE)
+  {
+    message.linear_speed = 2.0;
+    message.angular_speed = 0.0;
+
+    if (compteur_ >= 10)
+    {
+      etat_ = TOURNE_APRES_PETIT_COTE;
+      compteur_ = 0;
+    }
+  }
+  else if (etat_ == TOURNE_APRES_PETIT_COTE)
+  {
+    message.linear_speed = 0.0;
+    message.angular_speed = 1.57;
+
+    if (compteur_ >= 10)
+    {
+      etat_ = GRAND_COTE;
+      compteur_ = 0;
+    }
+  }
+
+  message.avoid_obstacle = false;
+
+  publisher_->publish(message);
+}
+rclcpp::Publisher<trajectory_interfaces::msg::TrajectoryCommand>::SharedPtr publisher_;
+rclcpp::TimerBase::SharedPtr timer_;
+
+Etat etat_ = GRAND_COTE;
+int compteur_ = 0;
 
   // -----------------------------------------------------------------
   // TODO 1 : Implementer une trajectoire non triviale.
