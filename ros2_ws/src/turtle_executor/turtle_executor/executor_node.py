@@ -36,10 +36,12 @@ class ExecutorNode(Node):
         twist.linear.x = msg.linear_speed
         twist.angular.z = msg.angular_speed
         self.publisher_.publish(twist)
+        
     # -----------------------------------------------------------------
     # TODO 2 : Afficher un message de log lorsque msg.avoid_obstacle est a True.
     # -----------------------------------------------------------------
-
+        if msg.avoid_obstacle:
+            self.get_logger().info('Obstacle detecte')
 
 def main(args=None):
     rclpy.init(args=args)
