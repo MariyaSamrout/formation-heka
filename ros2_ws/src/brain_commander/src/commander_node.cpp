@@ -12,6 +12,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "trajectory_interfaces/msg/trajectory_command.hpp"
+#include "turtlesim/msg/pose.hpp"
+#include <cmath>
 
 using namespace std::chrono_literals;
 
@@ -25,7 +27,7 @@ public:
       "/trajectory_cmd", 10
     );
     timer_= this->create_wall_timer(
-      100ms,
+      50ms,
       std::bind(&CommanderNode::timer_callback, this));
     
 
@@ -33,8 +35,9 @@ public:
     //
      obstacle_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
      "/obstacle_alert", 10,
-     std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
-
+    std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
+    pose_subscription_ = this->create_subscription<turtlesim::msg::Pose>("/turtle1/pose", 10,
+    std::bind(&CommanderNode::pose_callback, this, std::placeholders::_1));
     RCLCPP_INFO(this->get_logger(), "commander_node demarre.");
   }
 
@@ -50,73 +53,122 @@ enum Etat
 void timer_callback()
 {
   trajectory_interfaces::msg::TrajectoryCommand message;
-  if (obstacle_detected_)
-{
-  message.linear_speed = 0.0;
-  message.angular_speed = 0.0;
-  message.avoid_obstacle = true;
 
-  publisher_->publish(message);
-  return;
-}
-  compteur_= compteur_+ 1;
+  if (obstacle_detected_)
+  {
+    message.linear_speed = 0.0;
+    message.angular_speed = 0.0;
+    message.avoid_obstacle = true;
+
+    publisher_->publish(message);
+    return;
+  }
+
+  double distance = sqrt(
+    (x_ - x_depart_) * (x_ - x_depart_) +
+    (y_ - y_depart_) * (y_ - y_depart_)
+  );
+
   if (etat_ == GRAND_COTE)
   {
-    message.linear_speed = 2.0;
+    message.linear_speed = 1.0;
     message.angular_speed = 0.0;
 
-    if (compteur_ >= 20)
+    if (distance >= 3.0)
     {
+      angle_depart_ = angle_;
       etat_ = TOURNE_APRES_GRAND_COTE;
-      compteur_ = 0;
     }
   }
+
   else if (etat_ == TOURNE_APRES_GRAND_COTE)
   {
     message.linear_speed = 0.0;
-    message.angular_speed = 1.57;
+    message.angular_speed = 0.8;
 
-    if (compteur_ >= 10)
+    double difference = angle_ - angle_depart_;
+
+    if (difference < 0.0)
     {
-      etat_ = PETIT_COTE;
-      compteur_ = 0;
+      difference = difference + 6.28;
     }
+
+   if (difference >= 1.55)
+   {
+    message.angular_speed = 0.0;
+    x_depart_ = x_;
+    y_depart_ = y_;
+    etat_ = PETIT_COTE;
   }
+  }
+
   else if (etat_ == PETIT_COTE)
   {
-    message.linear_speed = 2.0;
+    message.linear_speed = 1.0;
     message.angular_speed = 0.0;
 
-    if (compteur_ >= 10)
+    if (distance >= 1.5)
     {
+      angle_depart_ = angle_;
       etat_ = TOURNE_APRES_PETIT_COTE;
-      compteur_ = 0;
     }
   }
+
   else if (etat_ == TOURNE_APRES_PETIT_COTE)
   {
     message.linear_speed = 0.0;
-    message.angular_speed = 1.57;
+    message.angular_speed = 0.8;
 
-    if (compteur_ >= 10)
+    double difference = angle_ - angle_depart_;
+
+    if (difference < 0.0)
     {
-      etat_ = GRAND_COTE;
-      compteur_ = 0;
+      difference = difference + 6.28;
     }
+
+    if (difference >= 1.55)
+    {
+    message.angular_speed = 0.0;
+    x_depart_ = x_;
+    y_depart_ = y_;
+    etat_ = GRAND_COTE;
+  }
   }
 
   message.avoid_obstacle = false;
-
   publisher_->publish(message);
 }
 
 rclcpp::Publisher<trajectory_interfaces::msg::TrajectoryCommand>::SharedPtr publisher_;
 rclcpp::TimerBase::SharedPtr timer_;
 rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obstacle_subscription_;
+rclcpp::Subscription<turtlesim::msg::Pose>::SharedPtr pose_subscription_;
+
+double angle_ = 0.0;
+double angle_depart_ = 0.0;
+double x_ = 0.0;
+double y_ = 0.0;
+
+double x_depart_ = 0.0;
+double y_depart_ = 0.0;
 bool obstacle_detected_ = false;
+bool premiere_pose_ = true;
 
 Etat etat_ = GRAND_COTE;
-int compteur_ = 0;
+
+void pose_callback(const turtlesim::msg::Pose::SharedPtr message)
+{
+  x_ = message->x;
+  y_ = message->y;
+  angle_ = message->theta;
+
+  if (premiere_pose_)
+  {
+    x_depart_ = x_;
+    y_depart_ = y_;
+    premiere_pose_ = false;
+  }
+}
 void obstacle_callback(const std_msgs::msg::Bool::SharedPtr message)
 {
   obstacle_detected_ = message->data;
