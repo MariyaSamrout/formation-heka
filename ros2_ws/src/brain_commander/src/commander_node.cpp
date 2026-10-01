@@ -31,9 +31,9 @@ public:
 
     // Un noeud externe pour publier sur /obstacle_alert afin de simuler la detection d'un obstacle.
     //
-    // obstacle_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
-    // "/obstacle_alert", 10,
-    // std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
+     obstacle_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
+     "/obstacle_alert", 10,
+     std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
 
     RCLCPP_INFO(this->get_logger(), "commander_node demarre.");
   }
@@ -50,6 +50,15 @@ enum Etat
 void timer_callback()
 {
   trajectory_interfaces::msg::TrajectoryCommand message;
+  if (obstacle_detected_)
+{
+  message.linear_speed = 0.0;
+  message.angular_speed = 0.0;
+  message.avoid_obstacle = true;
+
+  publisher_->publish(message);
+  return;
+}
   compteur_= compteur_+ 1;
   if (etat_ == GRAND_COTE)
   {
@@ -100,11 +109,27 @@ void timer_callback()
 
   publisher_->publish(message);
 }
+
 rclcpp::Publisher<trajectory_interfaces::msg::TrajectoryCommand>::SharedPtr publisher_;
 rclcpp::TimerBase::SharedPtr timer_;
+rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obstacle_subscription_;
+bool obstacle_detected_ = false;
 
 Etat etat_ = GRAND_COTE;
 int compteur_ = 0;
+void obstacle_callback(const std_msgs::msg::Bool::SharedPtr message)
+{
+  obstacle_detected_ = message->data;
+
+  if (obstacle_detected_)
+  {
+    RCLCPP_INFO(this->get_logger(), "Obstacle detecte.");
+  }
+  else
+  {
+    RCLCPP_INFO(this->get_logger(), "Obstacle disparu.");
+  }
+}
 
   // -----------------------------------------------------------------
   // TODO 1 : Implementer une trajectoire non triviale.
