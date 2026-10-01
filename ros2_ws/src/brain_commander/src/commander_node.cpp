@@ -1,12 +1,19 @@
-#include <chrono>
-#include <cmath>
-#include <functional>
-#include <memory>
+/*
+ * commander_node.cpp
+ *
+ * Node "cerveau" du projet : calcule la commande de deplacement de la tortue
+ * et la publie sur /trajectory_cmd. Le node "turtle_executor" (Python) se
+ * charge de transformer cette commande en Twist pour turtlesim.
+ */
 
+#include <chrono>
+#include <memory>
+#include <functional>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "trajectory_interfaces/msg/trajectory_command.hpp"
 #include "turtlesim/msg/pose.hpp"
+#include <cmath>
 
 using namespace std::chrono_literals;
 
@@ -16,173 +23,197 @@ public:
   CommanderNode()
   : Node("commander_node")
   {
-    publisher_ =
-      this->create_publisher<trajectory_interfaces::msg::TrajectoryCommand>(
-        "/trajectory_cmd", 10);
+    publisher_ = this->create_publisher<trajectory_interfaces::msg::TrajectoryCommand>(
+      "/trajectory_cmd", 10
+    );
+    timer_= this->create_wall_timer(
+      50ms,
+      std::bind(&CommanderNode::timer_callback, this));
+    
 
-    timer_ = this->create_wall_timer(
-      20ms, std::bind(&CommanderNode::timer_callback, this));
-
-    pose_subscription_ = this->create_subscription<turtlesim::msg::Pose>(
-      "/turtle1/pose", 10,
-      std::bind(&CommanderNode::pose_callback, this, std::placeholders::_1));
-
-    obstacle_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
-      "/obstacle_alert", 10,
-      std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
-
+    // Un noeud externe pour publier sur /obstacle_alert afin de simuler la detection d'un obstacle.
+    //
+     obstacle_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
+     "/obstacle_alert", 10,
+    std::bind(&CommanderNode::obstacle_callback, this, std::placeholders::_1));
+    pose_subscription_ = this->create_subscription<turtlesim::msg::Pose>("/turtle1/pose", 10,
+    std::bind(&CommanderNode::pose_callback, this, std::placeholders::_1));
     RCLCPP_INFO(this->get_logger(), "commander_node demarre.");
   }
 
 private:
-  void pose_callback(const turtlesim::msg::Pose::SharedPtr message)
+enum Etat
+{
+  GRAND_COTE,
+  TOURNE_APRES_GRAND_COTE,
+  PETIT_COTE,
+  TOURNE_APRES_PETIT_COTE
+};
+
+void timer_callback()
+{
+  trajectory_interfaces::msg::TrajectoryCommand message;
+
+  if (obstacle_detected_)
   {
-    x_ = message->x;
-    y_ = message->y;
-    angle_ = message->theta;
-    pose_received_ = true;
-
-    // Calculate the rectangle's four fixed target corners once,
-    // based on the turtle's starting position and direction.
-    if (!waypoints_ready_)
-    {
-      const double forward_x = std::cos(angle_);
-      const double forward_y = std::sin(angle_);
-      const double left_x = -forward_y;
-      const double left_y = forward_x;
-
-      const double start_x = x_;
-      const double start_y = y_;
-
-      // Target 0: end of the long side.
-      target_x_[0] = start_x + 3.0 * forward_x;
-      target_y_[0] = start_y + 3.0 * forward_y;
-
-      // Target 1: end of the first short side.
-      target_x_[1] = target_x_[0] + 1.5 * left_x;
-      target_y_[1] = target_y_[0] + 1.5 * left_y;
-
-      // Target 2: end of the second long side.
-      target_x_[2] = start_x + 1.5 * left_x;
-      target_y_[2] = start_y + 1.5 * left_y;
-
-      // Target 3: return to the starting corner.
-      target_x_[3] = start_x;
-      target_y_[3] = start_y;
-
-      waypoints_ready_ = true;
-      RCLCPP_INFO(this->get_logger(), "Les quatre coins du rectangle sont definis.");
-    }
-  }
-
-  void obstacle_callback(const std_msgs::msg::Bool::SharedPtr message)
-  {
-    if (message->data != obstacle_detected_)
-    {
-      obstacle_detected_ = message->data;
-
-      if (obstacle_detected_)
-      {
-        RCLCPP_INFO(this->get_logger(), "Obstacle detecte.");
-      }
-      else
-      {
-        RCLCPP_INFO(this->get_logger(), "Obstacle disparu.");
-      }
-    }
-  }
-
-  void timer_callback()
-  {
-    constexpr double pi = 3.14159265358979323846;
-    constexpr double distance_tolerance = 0.03;
-    constexpr double angle_tolerance = 0.03;
-
-    trajectory_interfaces::msg::TrajectoryCommand message;
     message.linear_speed = 0.0;
     message.angular_speed = 0.0;
-    message.avoid_obstacle = obstacle_detected_;
-
-    // Stop until the first turtle pose has arrived and the corners are known.
-    if (!pose_received_ || !waypoints_ready_ || obstacle_detected_)
-    {
-      publisher_->publish(message);
-      return;
-    }
-
-    const double dx = target_x_[target_index_] - x_;
-    const double dy = target_y_[target_index_] - y_;
-    const double distance = std::sqrt(dx * dx + dy * dy);
-
-    // When close enough to a corner, move on to the next fixed corner.
-    if (distance < distance_tolerance)
-    {
-      target_index_ = (target_index_ + 1) % 4;
-      publisher_->publish(message);
-      return;
-    }
-
-    const double target_angle = std::atan2(dy, dx);
-    double angle_error = target_angle - angle_;
-
-    // Keep the angle error between -pi and pi.
-    while (angle_error > pi)
-    {
-      angle_error -= 2.0 * pi;
-    }
-
-    while (angle_error < -pi)
-    {
-      angle_error += 2.0 * pi;
-    }
-
-    // Turn in place until the turtle faces the next corner.
-    if (std::fabs(angle_error) > angle_tolerance)
-    {
-      message.linear_speed = 0.0;
-
-      if (angle_error > 0.0)
-      {
-        message.angular_speed = 0.6;
-      }
-      else
-      {
-        message.angular_speed = -0.6;
-      }
-    }
-    else
-    {
-      // Once aligned, move toward the corner.
-      message.linear_speed = 0.5;
-      message.angular_speed = 0.0;
-    }
+    message.avoid_obstacle = true;
 
     publisher_->publish(message);
+    return;
   }
 
-  rclcpp::Publisher<trajectory_interfaces::msg::TrajectoryCommand>::SharedPtr
-    publisher_;
+  double distance = sqrt(
+    (x_ - x_depart_) * (x_ - x_depart_) +
+    (y_ - y_depart_) * (y_ - y_depart_)
+  );
 
-  rclcpp::TimerBase::SharedPtr timer_;
+  if (etat_ == GRAND_COTE)
+  {
+    message.linear_speed = 1.0;
+    message.angular_speed = 0.0;
 
-  rclcpp::Subscription<turtlesim::msg::Pose>::SharedPtr
-    pose_subscription_;
+    if (distance >= 3.0)
+    {
+      angle_depart_ = angle_;
+      etat_ = TOURNE_APRES_GRAND_COTE;
+    }
+  }
 
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
-    obstacle_subscription_;
+  else if (etat_ == TOURNE_APRES_GRAND_COTE)
+  {
+    message.linear_speed = 0.0;
+    message.angular_speed = 0.8;
 
-  double x_{0.0};
-  double y_{0.0};
-  double angle_{0.0};
+    double difference = angle_ - angle_depart_;
 
-  double target_x_[4]{};
-  double target_y_[4]{};
+    if (difference < 0.0)
+    {
+      difference = difference + 6.28;
+    }
 
-  int target_index_{0};
+   if (difference >= 1.55)
+   {
+    message.angular_speed = 0.0;
+    x_depart_ = x_;
+    y_depart_ = y_;
+    etat_ = PETIT_COTE;
+  }
+  }
 
-  bool pose_received_{false};
-  bool waypoints_ready_{false};
-  bool obstacle_detected_{false};
+  else if (etat_ == PETIT_COTE)
+  {
+    message.linear_speed = 1.0;
+    message.angular_speed = 0.0;
+
+    if (distance >= 1.5)
+    {
+      angle_depart_ = angle_;
+      etat_ = TOURNE_APRES_PETIT_COTE;
+    }
+  }
+
+  else if (etat_ == TOURNE_APRES_PETIT_COTE)
+  {
+    message.linear_speed = 0.0;
+    message.angular_speed = 0.8;
+
+    double difference = angle_ - angle_depart_;
+
+    if (difference < 0.0)
+    {
+      difference = difference + 6.28;
+    }
+
+    if (difference >= 1.55)
+    {
+    message.angular_speed = 0.0;
+    x_depart_ = x_;
+    y_depart_ = y_;
+    etat_ = GRAND_COTE;
+  }
+  }
+
+  message.avoid_obstacle = false;
+  publisher_->publish(message);
+}
+
+rclcpp::Publisher<trajectory_interfaces::msg::TrajectoryCommand>::SharedPtr publisher_;
+rclcpp::TimerBase::SharedPtr timer_;
+rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obstacle_subscription_;
+rclcpp::Subscription<turtlesim::msg::Pose>::SharedPtr pose_subscription_;
+
+double angle_ = 0.0;
+double angle_depart_ = 0.0;
+double x_ = 0.0;
+double y_ = 0.0;
+
+double x_depart_ = 0.0;
+double y_depart_ = 0.0;
+bool obstacle_detected_ = false;
+bool premiere_pose_ = true;
+
+Etat etat_ = GRAND_COTE;
+
+void pose_callback(const turtlesim::msg::Pose::SharedPtr message)
+{
+  x_ = message->x;
+  y_ = message->y;
+  angle_ = message->theta;
+
+  if (premiere_pose_)
+  {
+    x_depart_ = x_;
+    y_depart_ = y_;
+    premiere_pose_ = false;
+  }
+}
+void obstacle_callback(const std_msgs::msg::Bool::SharedPtr message)
+{
+  obstacle_detected_ = message->data;
+
+  if (obstacle_detected_)
+  {
+    RCLCPP_INFO(this->get_logger(), "Obstacle detecte.");
+  }
+  else
+  {
+    RCLCPP_INFO(this->get_logger(), "Obstacle disparu.");
+  }
+}
+
+  // -----------------------------------------------------------------
+  // TODO 1 : Implementer une trajectoire non triviale.
+  //
+  // Objectif : faire dessiner a la tortue une trajectoire definie
+  // (par exemple un carre, un cercle, ou une suite de points).
+  //
+  // Suggestion d'approche pour un carre :
+  //   - definir un etat interne (ex: enum { AVANCE, TOURNE })
+  //   - avancer pendant N secondes, puis tourner de 90 degres,
+  //     puis repeter
+  //   - vous aurez besoin d'un ou plusieurs membres prives pour
+  //     suivre le temps ecoule / l'etat courant (voir section
+  //     "membres prives" plus bas)
+  //
+  // Pour l'instant, ce squelette avance tout droit en continu.
+  // C'est a vous de le faire evoluer.
+  // -----------------------------------------------------------------
+
+  // -----------------------------------------------------------------
+  // TODO 2 : Reagir a la detection d'un obstacle.
+  //
+  // La variable obstacle_detected_ est mise a jour automatiquement
+  // par obstacle_callback() ci-dessus des qu'un message arrive sur
+  // /obstacle_alert (testable avec :
+  //   ros2 topic pub /obstacle_alert std_msgs/msg/Bool "{data: true}"
+  // ).
+  //
+  // A vous de decider ce que la tortue doit faire quand un obstacle
+  // est detecte (s'arreter ? reculer ? tourner ?), et de l'implementer
+  // ici. Pensez a mettre message.avoid_obstacle a jour en consequence.
+  // -----------------------------------------------------------------
 };
 
 int main(int argc, char * argv[])
